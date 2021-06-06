@@ -4,8 +4,10 @@ from itertools import product
 import numpy as np
 import h5py
 import cv2
+from sklearn.model_selection import train_test_split
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
+import pytorch_lightning as pl
 
 
 class SuperResoNC(Dataset):
@@ -17,6 +19,7 @@ class SuperResoNC(Dataset):
         input_size: tuple = None,  # used when `use_cv2` is True.
         step: Union[tuple, int] = None,  # used when `use_cv2` is False.
         shift: Union[tuple, int] = (0, 0),  # used when `use_cv2` is False
+        data_key: str = 'data'
     ):
         """
         A Pytorch Dataset for super-resolution model. The input to the model are the
@@ -42,10 +45,11 @@ class SuperResoNC(Dataset):
             step: tuple | int. Step of splicing. Required when `use_cv2` is False.
             shift: tuple | int. Starting index of splicing. Required when `use_cv2` is
                 False.
+            data_key: str. The key of data in the h5 file.
         """
         super().__init__()
         self.file = h5py.File(data_dir)
-        self.len, self.height = self.file["data"].shape[0:2]
+        self.len, self.num_heights = self.file[data_key].shape[0:2]
         self.mean = self.file["mean"][:][..., None, None]
         self.std = self.file["std"][:][..., None, None]
 
@@ -57,7 +61,7 @@ class SuperResoNC(Dataset):
         else:
             assert step is not None
             self.step = (step, step) if isinstance(step, int) else step
-            self.shift = (shift, shift) if isinstance(shift, int) else step
+            self.shift = (shift, shift) if isinstance(shift, int) else shift
             self.gen_input = self._gen_input
 
     def _gen_input_cv2(self, target):
@@ -74,16 +78,16 @@ class SuperResoNC(Dataset):
         return target[:, self.shift[0] :: self.step[0], self.shift[1] :: self.step[1]]
 
     def __len__(self):
-        return self.len
+        return self.len * self.num_heights
 
     def __getitem__(self, index):
-        height = np.random.choice(self.height)
+        height, idx = divmod(index, self.len)
         # target: [5, 15, 14]
-        target = (
-            (self.file["data"][index, height] - self.mean[height]) / self.std[height]
-        )
+        target = (self.file["data"][idx, height] - self.mean[height]) / self.std[
+            height
+        ]
         input_ = self.gen_input(target)
-        return height, torch.from_numpy(input_), torch.from_numpy(target)
+        return torch.tensor(height), torch.from_numpy(input_).float(), torch.from_numpy(target).float()
 
     def __del__(self):
         self.file.close()
@@ -126,7 +130,7 @@ class Corner2CenterDataset(Dataset):
         """
         super().__init__()
         self.file = h5py.File(data_dir)
-        self.len, self.height = self.file["data"].shape[0:2]
+        self.len, self.num_heights = self.file["data"].shape[0:2]
         self.mean = self.file["mean"][:][..., None, None]
         self.std = self.file["std"][:][..., None, None]
 
@@ -159,14 +163,14 @@ class Corner2CenterDataset(Dataset):
     def __getitem__(self, index):
         sample_idx, anchor_idx = divmod(index, len(self.anchors))
         x, y = self.anchors[anchor_idx]
-        height = np.random.choice(self.height)
+        height = np.random.choice(self.num_heights)
         data = torch.from_numpy(
             (self.file["data"][sample_idx, height] - self.mean[height])
             / self.std[height]
         )
         input_ = data[:, (x[0], x[1])][..., (y[0], y[1])]
         target = data[:, x[0] : x[1] : x[2], y[0] : y[1] : y[2]]
-        return height, input_, target
+        return torch.tensor(height), input_.float(), target.float()
 
     def __del__(self):
         self.file.close()
@@ -178,7 +182,7 @@ def test_dataset1():
     rprint(len(dataset))  # 8736
     rprint(dataset[1234][1].shape)  # (5, *input_size)
 
-    dataset = SuperResoNC(data_dir, use_cv2=False, step=2, shift=0)
+    dataset = SuperResoNC(data_dir, use_cv2=False, step=(3, 3), shift=(0, 0))
     rprint(len(dataset))  # 8736
     rprint(dataset[1234][1].shape)  # (5, 8, 7) for `step = 2`, `shift = 0`
 
@@ -191,10 +195,54 @@ def test_dataset2():
     rprint(dataset[1233][2].shape)  # (5, seg_num + 1, seg_num + 1)
 
 
+class SuperResoNCDataModule(pl.LightningDataModule):
+    def __init__(self, data_dir, batch_size, use_cv2, input_size=None, step=None, shift=None):
+        super().__init__()
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.use_cv2 = use_cv2
+        self.input_size = input_size
+        self.step = step
+        self.shift = shift
+    
+    def prepare_data(self) -> None:
+        with h5py.File(self.data_dir, 'a') as f:
+            train_data, val_data = train_test_split(f['data'][:], test_size=0.15)
+            del f['data_train']
+            del f['data_val']
+            f['data_train'] = train_data
+            f['data_val'] = val_data
+    
+    def setup(self, stage=None):
+        if stage == 'fit':
+            self.train_dataset = SuperResoNC(self.data_dir, use_cv2=self.use_cv2, input_size=self.input_size, step=self.step, shift=self.shift, data_key='data_train')
+            self.val_dataset = SuperResoNC(self.data_dir, use_cv2=self.use_cv2, input_size=self.input_size, step=self.step, shift=self.shift, data_key='data_val')
+        elif stage == 'test':
+            raise NotImplementedError
+        
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=8,
+            pin_memory=True
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=8,
+            pin_memory=True
+        )
+
+
 if __name__ == "__main__":
     from rich import print as rprint
     from rich.traceback import install
 
     install()
     test_dataset1()
-    test_dataset2()
+    # test_dataset2()
