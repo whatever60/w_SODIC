@@ -33,29 +33,33 @@ val_data_dir = "./data/raw/processed/"
 #     delta_lon = (lon1 - lon2) / 0.009168333333333105
 #     delta_lat = (lat1 - lat2) / 0.008425000000000031
 #     return delta_lon ** 2 + delta_lat ** 2
+DELTA_LON = 0.009168333333333105
+DELTA_LAT = 0.008425000000000031
 
 
 def val(pred_data_dir, val_info_dir, val_data_dir, date="2019-06-30", on_time=True):
     submit = io.loadmat(pred_data_dir)
-    assert sorted(submit.keys()) == sorted([
-        "__globals__",
-        "__header__",
-        "__version__",
-        "Lon",  # [150, 140]
-        "Lat",
-        "F3",  # [150, 140, 1, 24] / [150, 140, 1, 24 * 4]
-        "F8",
-        "F10",
-        "F14",
-        "F15",
-        "F17",
-        "F19",
-        "F20",
-        "F21",
-        "F22",
-        "F23",
-        "F25",
-    ]), sorted(submit.keys())
+    assert sorted(submit.keys()) == sorted(
+        [
+            "__globals__",
+            "__header__",
+            "__version__",
+            "Lon",  # [150, 140]
+            "Lat",
+            "F3",  # [150, 140, 1, 24] / [150, 140, 1, 24 * 4]
+            "F8",
+            "F10",
+            "F14",
+            "F15",
+            "F17",
+            "F19",
+            "F20",
+            "F21",
+            "F22",
+            "F23",
+            "F25",
+        ]
+    ), sorted(submit.keys())
     station_info = pd.read_csv(val_info_dir)
     station_data = pd.read_csv(val_data_dir).query(f'date == "{date}"')
     station_data["mask"] = station_data["mask"].astype(bool)
@@ -66,24 +70,22 @@ def val(pred_data_dir, val_info_dir, val_data_dir, date="2019-06-30", on_time=Tr
 
     maes = []
     for _, i in station_info.iterrows():
-        distances = (
-            ((submit["Lon"].flatten() - i.lon) / 0.009168333333333105) ** 2 +
-            ((submit["Lat"].flatten() - i.lat) / 0.008425000000000031) ** 2
+        distances = np.power((submit["Lon"] - i.lon) / DELTA_LON, 2) + np.power(
+            (submit["Lat"] - i.lat) / DELTA_LAT, 2
         )
-        nearest_coor_lon, nearest_coor_lat = divmod(distances.argmax(), 140)
+        nearest_coor_lon, nearest_coor_lat = divmod(distances.argmin(), 140)
         pred = submit[i.station_id][nearest_coor_lon, nearest_coor_lat, 0]
         target = station_data.query(f'station_id == "{i.station_id}"')
         maes.extend(
             np.abs(pred[~target["mask"]] - target.wind_speed[~target["mask"]]).tolist()
         )
-        break
     return 1 / (1 + sum(maes) / len(maes))
 
 
 def test_example():
     rprint(
         val(
-            "./submit_train.mat",
+            "./data/submit/submit_median_gt.mat",
             "./data/raw/processed/train_station.csv",
             "./data/processed/train.csv",
         )

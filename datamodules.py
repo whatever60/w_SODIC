@@ -15,11 +15,12 @@ class SuperResoNC(Dataset):
         self,
         data_dir: str,
         *,
+        max_height=10,
         use_cv2: bool = False,
         input_size: tuple = None,  # used when `use_cv2` is True.
         step: Union[tuple, int] = None,  # used when `use_cv2` is False.
         shift: Union[tuple, int] = (0, 0),  # used when `use_cv2` is False
-        data_key: str = 'data'
+        data_key: str = "data"
     ):
         """
         A Pytorch Dataset for super-resolution model. The input to the model are the
@@ -49,7 +50,8 @@ class SuperResoNC(Dataset):
         """
         super().__init__()
         self.file = h5py.File(data_dir)
-        self.len, self.num_heights = self.file[data_key].shape[0:2]
+        self.len, num_heights = self.file[data_key].shape[0:2]
+        self.num_heights = min(num_heights, max_height)
         self.mean = self.file["mean"][:][..., None, None]
         self.std = self.file["std"][:][..., None, None]
 
@@ -77,20 +79,28 @@ class SuperResoNC(Dataset):
     def _gen_input(self, target):
         return target[:, self.shift[0] :: self.step[0], self.shift[1] :: self.step[1]]
 
+    def _aug(self, target):
+        if np.random.rand() > 0.5:
+            target = np.flip(target, axis=1).copy()  # vertical flip
+        if np.random.rand() > 0.5:
+            target = np.flip(target, axis=2).copy()  # horizontal flip
+        return target
+
     def __len__(self):
         return self.len * self.num_heights
 
     def __getitem__(self, index):
         height, idx = divmod(index, self.len)
         # target: [5, 15, 14]
-        target = (self.file["data"][idx, height] - self.mean[height]) / self.std[
-            height
-        ]
+        target = (self.file["data"][idx, height] - self.mean[height]) / self.std[height]
+        target = self._aug(target)
         input_ = self.gen_input(target)
-        return torch.tensor(height), torch.from_numpy(input_).float(), torch.from_numpy(target).float()
-
-    def __del__(self):
-        self.file.close()
+        # we do not use from_numpy because `np.flip` create new view with negative stride but pytorch tensor does not support negative stride/
+        return (
+            torch.tensor(height),
+            torch.from_numpy(input_).float(),
+            torch.from_numpy(target).float(),
+        )
 
 
 class Corner2CenterDataset(Dataset):
@@ -196,7 +206,9 @@ def test_dataset2():
 
 
 class SuperResoNCDataModule(pl.LightningDataModule):
-    def __init__(self, data_dir, batch_size, use_cv2, input_size=None, step=None, shift=None):
+    def __init__(
+        self, data_dir, batch_size, use_cv2, input_size=None, step=None, shift=None
+    ):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
@@ -204,29 +216,42 @@ class SuperResoNCDataModule(pl.LightningDataModule):
         self.input_size = input_size
         self.step = step
         self.shift = shift
-    
+
     def prepare_data(self) -> None:
-        with h5py.File(self.data_dir, 'a') as f:
-            train_data, val_data = train_test_split(f['data'][:], test_size=0.15)
-            del f['data_train']
-            del f['data_val']
-            f['data_train'] = train_data
-            f['data_val'] = val_data
-    
+        with h5py.File(self.data_dir, "a") as f:
+            if "data_train" not in f:
+                train_data, val_data = train_test_split(f["data"][:], test_size=0.15)
+                f["data_train"] = train_data
+                f["data_val"] = val_data
+
     def setup(self, stage=None):
-        if stage == 'fit':
-            self.train_dataset = SuperResoNC(self.data_dir, use_cv2=self.use_cv2, input_size=self.input_size, step=self.step, shift=self.shift, data_key='data_train')
-            self.val_dataset = SuperResoNC(self.data_dir, use_cv2=self.use_cv2, input_size=self.input_size, step=self.step, shift=self.shift, data_key='data_val')
-        elif stage == 'test':
+        if stage == "fit":
+            self.train_dataset = SuperResoNC(
+                self.data_dir,
+                use_cv2=self.use_cv2,
+                input_size=self.input_size,
+                step=self.step,
+                shift=self.shift,
+                data_key="data_train",
+            )
+            self.val_dataset = SuperResoNC(
+                self.data_dir,
+                use_cv2=self.use_cv2,
+                input_size=self.input_size,
+                step=self.step,
+                shift=self.shift,
+                data_key="data_val",
+            )
+        elif stage == "test":
             raise NotImplementedError
-        
+
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=8,
-            pin_memory=True
+            pin_memory=True,
         )
 
     def val_dataloader(self):
@@ -235,7 +260,7 @@ class SuperResoNCDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=8,
-            pin_memory=True
+            pin_memory=True,
         )
 
 

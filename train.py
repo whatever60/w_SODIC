@@ -11,8 +11,8 @@ class Net(pl.LightningModule):
     def __init__(self, lr, batch_size, input_size, num_heights) -> None:
         super().__init__()
         self.save_hyperparameters()
-        self.model = Unet(5, 5, num_heights)
-        self.criterion = nn.MSELoss()
+        self.model = Unet(6, 6, num_heights)
+        self.criterion = nn.L1Loss()
 
     def forward(self, input_, height):
         return self.model(input_, height)
@@ -25,22 +25,26 @@ class Net(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self.shared_step(batch)
-        self.log('train_loss', loss)
+        self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss = self.shared_step(batch)
-        self.log('val_loss', loss)
-    
+        self.log("val_loss", loss)
+
     def configure_optimizers(self):
         return torch.optim.Adam(self.model.parameters(), lr=self.hparams.lr)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    # 0. Start. Adam, 5e-4, UNET(5, 5), MSELoss
+    # 1. UNET(5, 6). Add wind speed to regression target
+    # 2. L1Loss
     from rich.traceback import install
+
     install()
     pl.seed_everything(42)
-    DATA_DIR = './data/processed/data.h5'
+    DATA_DIR = "./data/processed/data_aug.h5"
     BATCH_SIZE = 128
     USE_CV2 = False
     INPUT_SIZE = (5, 5)
@@ -50,16 +54,12 @@ if __name__ == '__main__':
     LR = 5e-4
     MAX_EPOCHS = 600
 
-    datamodule = SuperResoNCDataModule(DATA_DIR, BATCH_SIZE, USE_CV2, INPUT_SIZE, STEP, SHIFT)
+    datamodule = SuperResoNCDataModule(
+        DATA_DIR, BATCH_SIZE, USE_CV2, INPUT_SIZE, STEP, SHIFT
+    )
     model = Net(LR, BATCH_SIZE, INPUT_SIZE, 12)
 
-    checkpoint = ''
+    checkpoint = ""
     if not checkpoint:
-        trainer = pl.Trainer(
-            gpus=[9],
-            deterministic=True,
-            max_epochs=MAX_EPOCHS
-        )
+        trainer = pl.Trainer(gpus=[9], deterministic=True, max_epochs=MAX_EPOCHS)
         trainer.fit(model, datamodule)
-
-    

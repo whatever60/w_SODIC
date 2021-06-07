@@ -11,7 +11,7 @@ class DoubleConv(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(out_ch, out_ch, 3, padding=1),
             nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
 
     def forward(self, ipt):
@@ -21,6 +21,7 @@ class DoubleConv(nn.Module):
 class Unet(nn.Module):
     input_size = (5, 5)
     target_size = (15, 14)
+
     def __init__(self, in_ch, out_ch, num_heights):
         super().__init__()
         height_dim = 10
@@ -37,7 +38,13 @@ class Unet(nn.Module):
         self.conv10 = nn.Conv2d(64, out_ch, (6, 7))
         self.num_heights = num_heights
         self.height_embedding = nn.Embedding(num_heights, height_channels)
-        self.height_conv = nn.ConvTranspose2d(height_dim, height_channels, kernel_size=self.input_size, stride=1, padding=0)
+        self.height_conv = nn.ConvTranspose2d(
+            height_dim,
+            height_channels,
+            kernel_size=self.input_size,
+            stride=1,
+            padding=0,
+        )
 
     def forward(self, x, height):
         height_emb = self.height_embedding(height).view(x.shape[0], -1, 1, 1)
@@ -64,10 +71,10 @@ def test_unet():
     rprint(model(input_, height).shape)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     from rich import print as rprint
     from rich.traceback import install
+
     install()
-    
+
     test_unet()
-    
